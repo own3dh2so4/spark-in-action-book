@@ -25,12 +25,14 @@ object SparkStreaming extends App{
 
   //Folder paths
   val inputFiles = prop("input.folder").getOrElse("") + "orders-streaming/"
-  val outputFiles = prop("output.folder").getOrElse("") + "orders-streaming/"
+  val outputFiles = prop("output.folder").getOrElse("") + "orders-streaming/output"
+  val tmpFiles = prop("tmp.folder").getOrElse("") + "orders-streaming/"
+
 
   val spark = SparkSession.builder.
     master(sparkMaster).appName(sparkAppName).getOrCreate()
   val sc = spark.sparkContext
-
+  sc.setCheckpointDir(tmpFiles)
   val ssc = new StreamingContext(sc, Seconds(5))
 
   val filestream = ssc.textFileStream(inputFiles)
@@ -51,7 +53,7 @@ object SparkStreaming extends App{
   println("Contar el numero de orders de cada tipo")
   val numPerType = orders.map( o => (o.buy, 1L)).reduceByKey(_+_)
 
-  numPerType.repartition(1).saveAsTextFiles(outputFiles,"txt")
+  //numPerType.repartition(1).saveAsTextFiles(outputFiles)
 
   val amountPerClient= orders.map(o => (o.clientId, o.amount * o.price))
 
@@ -62,6 +64,22 @@ object SparkStreaming extends App{
       case None => Some(vals.sum)
     }
   })
+
+  val top5Clients = amountState.transform(_.sortBy(_._2,ascending = false).
+                  zipWithIndex().filter( _._2 < 5).map(_._1))
+
+  val buySellList = numPerType.map( x =>
+                    if (x._1) ("BUYS", List(x._2.toString))
+                    else ("SELLS", List(x._2.toString)))
+
+  val top5clList = top5Clients.repartition(1).map(_._1.toString).
+        glom.map(arr => ("TOP5CLIENTS",arr.toList))
+
+  val finalStream = buySellList.union(top5clList)
+
+
+  finalStream.repartition(1).saveAsTextFiles(outputFiles)
+
   ssc.start()
   ssc.awaitTermination()
 
